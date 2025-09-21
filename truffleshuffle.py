@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # tomsom
-# Derived from Sara Edwards' SANS FOR518
+# Derived from Sarah Edwards' SANS FOR518, updated from original Truffle Shuffle script
 
 # Truffleshuffle is a simple script that parses the Mac OS
 # ChunkStoreDatabase and ChunkStorage to carve versioned files.
