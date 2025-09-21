@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 # tomsom
 # Derived from Sara Edwards' SANS FOR518
@@ -8,91 +8,70 @@
 
 import os
 import sqlite3
-from optparse import OptionParser
+from argparse import ArgumentParser
 import struct
+import sys
 
-parser = OptionParser()
-parser.add_option("-c", dest="csfile", help="ChunkStorage file")
-parser.add_option("-d", dest="csdb",   help="ChunkStoreDatabase SQLite file")
-parser.add_option("-o", dest="outdir", help="Output folder", default="output")
-(options, args) = parser.parse_args()
+parser = ArgumentParser()
+parser.add_argument("-c", "--csfile", help="ChunkStorage File")
+parser.add_argument("-d", "--csdb",   help="ChunkStoreDatabase SQLite File")
+parser.add_argument("-o", "--outdir", help="Output folder", default="Output")
+options = parser.parse_args()
 
 try:
    if not os.path.exists(options.outdir):
       os.makedirs(options.outdir)
 except OSError as err:
-   print("OS error - %s" % str(err))
-   exit()
+   print(f"OS error - {str(err)}")
+   sys.exit(1)
 
 # open ChunkStoreDatabase and ChunkStorage file
-db = sqlite3.connect(str(options.csdb))
-cs = open(str(options.csfile), 'r')
-
-try:
-    # Extracting chunk lists
-    for [clt_rowid, clt_inode, clt_count, clt_chunkRowIDs] in db.execute('SELECT clt_rowid,clt_inode,clt_count,clt_chunkRowIDs FROM CSStorageChunkListTable'):
-        print "CSStorageChunkListTable RowID: %d" % (int(clt_rowid))
-        print "Inode: %d" % (int(clt_inode))
-        print "Number of chunks: %d" % (int(clt_count))
-        filename = "%s/%s-%s"     % (options.outdir, clt_inode, clt_rowid)
-        print "Output file: %s" % (filename)
-        print "Length clt_chunkRowIDs: %d" % (len(clt_chunkRowIDs))
-        number_of_chunks = int(len(clt_chunkRowIDs)/8)
-        print "Number of chunks based on length clt_chunkRowIDs: %d" % (number_of_chunks)
-
-        # Sanity check
-        if number_of_chunks != clt_count:
-            print "WARNING: number of chnuks inconsistent!"
-
-        # Open output file
+with sqlite3.connect(options.csdb) as db:
+    with open(options.csfile, 'rb') as cs:
         try:
-            output = open(filename, 'wb')
-        except IOError as e:
-            print "IO ERROR - Opening output file failed: %s" % (str(e))
-            sys.exit(-1)
+            # Extracting chunk lists
+            for row in db.execute('SELECT clt_rowid,clt_inode,clt_count,clt_chunkRowIDs FROM CSStorageChunkListTable'):
+                clt_rowid, clt_inode, clt_count, clt_chunkRowIDs = row
+                filename = f"{options.outdir}/{clt_inode}-{clt_rowid}"
+                number_of_chunks = len(clt_chunkRowIDs)//8
 
-        # Extracting chunks IDs
-        for i in range(0,len(str(clt_chunkRowIDs))/8):
-            (chunk_id,) = struct.unpack("<Q",str(clt_chunkRowIDs)[i*8:i*8+8])
+                # Sanity check
+                if number_of_chunks != clt_count:
+                    print("WARNING: number of chunks inconsistent!")
 
-            # Extracting chunks
-            for [offset, dataLen, cid] in db.execute("SELECT offset,dataLen,cid from CSChunkTable where ct_rowid = '%s'" % chunk_id):
+                # Open output file            
+                with open(filename, 'wb') as output:
+                
+                    for i in range(len(clt_chunkRowIDs)//8):
+                        (chunk_id,) = struct.unpack("<Q",clt_chunkRowIDs[i*8:i*8+8])
 
-                filenameraw = "%s/%s-%s-%d-raw" % (options.outdir, clt_inode, clt_rowid, chunk_id)
+                        # Extracting chunks
+                        for [offset, dataLen, cid] in db.execute("SELECT offset,dataLen,cid from CSChunkTable where ct_rowid = ?", (chunk_id,)):
+                            filenameraw = f"{options.outdir}/{clt_inode}-{clt_rowid}-{chunk_id}-raw" 
+                            print(filenameraw)
 
-                # Appen the actual chunk data to the output file
-                cs.seek(offset + 25)
-                chunkData = cs.read(dataLen - 25)
-                output.write(chunkData)
+                            # Append the actual chunk data to the output file
+                            cs.seek(offset + 25)
+                            chunkData = cs.read(dataLen - 25)
+                            output.write(chunkData)
 
-                # Write the chunk data with header to the RAW output file
-                cs.seek(offset)
-                chunkDataRaw = cs.read(dataLen)
+                            # Write the chunk data with header to the RAW output file
+                            cs.seek(offset)
+                            chunkDataRaw = cs.read(dataLen)
 
-                # Sanity checks
-                if struct.unpack(">l",chunkDataRaw[0:4])[0] != dataLen:
-                    print "WARNING: Chunk size inconsistent!"
-                    print "Chunk size in chunk: %d" % (struct.unpack(">l",chunkDataRaw[0:4])[0])
-                    print "Chunk size in DB: %d" % (dataLen)
+                            # Sanity checks
+                            if struct.unpack(">l", chunkDataRaw[0:4])[0] != dataLen:
+                                print("WARNING: Chunk size inconsistent!")
 
-                if str(chunkDataRaw[4:25]).encode('hex') != str(cid).encode('hex'):
-                    print "WARNING: Chunk ID inconsistent!"
-                    print "Chunk ID in chunk: %s" % (str(chunkDataRaw[4:25]).encode('hex'))
-                    print "Chunk ID in DB: %s" % (str(cid).encode('hex'))
+                            if chunkDataRaw[4:25].hex() != cid.hex():
+                                print("WARNING: Chunk ID inconsistent!")
 
-                try:
-                    outputraw = open(filenameraw,'wb')
-                except IOError as e:
-                    print "IO ERROR - Opening raw output file failed: %s" % (str(e))
-                    sys.exit(-1)
+                            with open(filenameraw,'wb') as outputraw:
+                                outputraw.write(chunkDataRaw)
 
-                outputraw.write(chunkDataRaw)
-                outputraw.close()
 
-        output.close()
+        except sqlite3.Error as err:
+            print(f"SQLite error - {str(err)}")
+            sys.exit(1)
 
-except sqlite3.Error as err:
-   print("SQLite error - %s" % str(err))
-   exit()
 
-db.close()
